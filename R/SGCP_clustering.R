@@ -259,7 +259,6 @@ clusterNumber <- function(egvals, maxNum = 102){
     return(numOpt)
 }
 
-
 ################################################################################# conductance
 conductance <- function(adja, clusLab){
 
@@ -606,13 +605,129 @@ cvGO <- function(adja, k, Y, X, annotation, geneID,
     return(newList)
 }
 
-
 ################################################################################# transformation
+transformation <- function(adjaMat, geneID, eff.egs){
+
+    # Calculates the data embedding, eigenvalues and eigenvectors
+    #
+    # Arguments:
+    #         adjaMat: adjacency matrix, square symmetric with values in (0, 1)
+    #                  and 0 diagonal
+    #         geneID: a vector of geneID
+    #                   there is one-to-one correspondence between geneID and rows
+    #                   in the adjacency matrix
+    #
+    # Value: a list of following
+    #         Y: eigenvectors
+    #         X: eigenvalues
+    #         geneID: a vector of geneIDs
+    #         ind: a vector of dropping genes
+
+
+    d <- as.matrix(as.vector(rowSums(adjaMat)))
+
+    ind <- which(d == 0)
+    if(length(ind) > 0){
+        adjaMat <- adjaMat[-ind, ]
+        adjaMat <- adjaMat[, -ind]
+        if(!is.null(geneID)){geneID <- geneID[-ind] }
+    }
+
+    # Normalized Laplacian
+    message("calculating normalized Laplacian \n it may take time...")
+
+    D <- diag(rowSums(adjaMat))
+    d <- as.matrix(as.vector(rowSums(adjaMat)))
+    diag(D) <- 1/sqrt(diag(D))
+    L <- D %*% adjaMat %*% D
+
+    k = min(200, nrow(adjaMat))
+
+    # Calculate the eigenvalues and eigenvectors
+    message("calculating eigenvalues/vectors \n it may take time...")
+    if(eff.egs){
+        egvv <- eigs_sym(L, k = k, which = "LA")
+    }else{
+        egvv <- eigen(L)}
+
+    Y <- egvv$vectors
+    X <- egvv$values
+
+    if(!is.unsorted(X)){
+        warning(" The eigenvalues are not sorted!", call. = FALSE)
+        message("sorting the eigenvalues/vectors...")
+        eg <- as.matrix(rbind(X, Y))
+        eg <- as.data.frame(t(eg))
+        colnames(eg)[1] <- "eigenvalues"
+        eg <- eg[order(eg$eigenvalues, decreasing = TRUE), ]
+        eg <- t(as.matrix(eg))
+        X <- eg[1, ]
+        temp <- seq_len(nrow(eg))
+        temp <- temp[-1]
+        Y <- eg[temp, ]}
+
+    # preprocessing to check for noisy genes
+    if(sum(round(X, 7) == 1) > 1 ){
+        message("dropping noisy genes...")
+        nois_ind <- findNoise(evec = Y, thresh = 100)
+        adjaMat <- adjaMat[-nois_ind, ]
+        adjaMat <- adjaMat[, -nois_ind]
+        D <- D[-nois_ind, ]
+        D <- D[, -nois_ind]
+        ind <- c(ind, nois_ind)
+
+        if(!is.null(geneID)){geneID <- geneID[-nois_ind]
+        temp <- paste0("number of noisy genes are... ", length(nois_ind))
+        message(temp)
+        message("calculation from begining...")}
+
+        # Calculate the diagonal degree matrix
+        D <- diag(rowSums(adjaMat))
+        d <- as.matrix(as.vector(rowSums(adjaMat)))
+
+        # Normalized Laplacian
+        message("calculating normalized Laplacian \n it may take time...")
+        diag(D) <- 1/sqrt(diag(D))
+        L <- D %*% adjaMat %*% D
+
+        k = min(200, nrow(adjaMat))
+
+        # Calculate the eigenvalues and eigenvectors
+        message("calculating eigenvalues/vectors \n it may take time...")
+        if(eff.egs){
+            egvv <- eigs_sym(L, k = k, which = "LA")
+        }else{
+            egvv <- eigen(L)}
+
+        Y <- egvv$vectors
+        X <- egvv$values } # end of if preprocessing
+
+    #
+    Y <- D %*% Y
+    Y <- sweep(Y, 2, (t(d) %*% Y)/sum(d))
+
+    #
+    D <- diag(rowSums(adjaMat))
+    scalar <- function(x, D){return(x/sqrt(as.vector(t(x) %*% D %*% x)))}
+    Y <- apply(Y, 2, scalar, D)
+
+    constant <- t(Y[,1]) %*% D %*% Y[, 1]
+    if(round(constant, 7) != 1 ){
+        warning("eigenvector 1 condition does not hold! ", call. = FALSE)
+        temp <- paste0("the condition value is ",
+                       as.double(t(Y[,1]) %*% D %*% Y[, 1] != 1))
+        message(temp) }
+
+    newList <- list("Y" = Y, "X" = X, "ind" = ind, "geneID" = geneID)
+
+}
+
+################################################################################# clustering2
 clustering <- function(adjaMat, geneID , annotation_db ,
-                    kopt = NULL, method = NULL,
-                    func.GO = sum, func.conduct = min,
-                    maxIter = 1e8, numStart = 1000,
-                    saveOrig = TRUE, n_egvec = 100, sil = FALSE){
+                        kopt = NULL, method = NULL,
+                        func.GO = sum, func.conduct = min,
+                        maxIter = 1e8, numStart = 1000, eff.egs = TRUE,
+                        saveOrig = TRUE, n_egvec = 200, sil = FALSE){
 
 
     if(is.data.frame(adjaMat)){
@@ -663,96 +778,22 @@ clustering <- function(adjaMat, geneID , annotation_db ,
         maxIter <- 1e+8
         numStart <- 1000}
 
-    if(is.numeric(n_egvec) && n_egvec != round(n_egvec)){
-        warning("n_egvec must be an integer or all", call. = FALSE) }
+    if(n_egvec != round(n_egvec)){
+        warning("n_egvec must be an integer ", call. = FALSE)
+        message("setting n_egvec to 200...")
+        n_egvec = 200}
+    if(n_egvec > 200){
+        warning("maximum value for n_egvec is 200", call. = FALSE)
+        message("setting n_egvec to 200...")
+        n_egvec = 200 }
 
 
-    # Calculate the diagonal degree matrix
-    D <- diag(rowSums(adjaMat))
-    d <- as.matrix(as.vector(rowSums(adjaMat)))
-
-    # Drop the zero values for D and drop that gene from the network
-    ind <- which(d == 0)
-    if(length(ind) > 0){
-        adjaMat <- adjaMat[-ind, ]
-        adjaMat <- adjaMat[, -ind]
-        D <- D[-ind, ]
-        D <- D[, -ind]
-        if(!is.null(geneID)){geneID <- geneID[-ind] } }
-
-    # Calculate the diagonal degree matrix
-    D <- diag(rowSums(adjaMat))
-    d <- as.matrix(as.vector(rowSums(adjaMat)))
-
-    # Normalized Laplacian
-    message("calculating normalized Laplacian \n it may take time...")
-    diag(D) <- 1/sqrt(diag(D))
-    L <- D %*% adjaMat %*% D
-
-    # Calculate the eigenvalues and eigenvectors
-    message("calculating eigenvalues/vectors \n it may take time...")
-    egvv <- eigen(L)
-    Y <- egvv$vectors
-    X <- egvv$values
-
-    if(!is.unsorted(X)){
-        warning(" The eigenvalues are not sorted!", call. = FALSE)
-        message("sorting the eigenvalues/vectors...")
-        eg <- as.matrix(rbind(X, Y))
-        eg <- as.data.frame(t(eg))
-        colnames(eg)[1] <- "eigenvalues"
-        eg <- eg[order(eg$eigenvalues, decreasing = TRUE), ]
-        eg <- t(as.matrix(eg))
-        X <- eg[1, ]
-        temp <- seq_len(nrow(eg))
-        temp <- temp[-1]
-        Y <- eg[temp, ]}
-
-    # preprocessing to check for noisy genes
-    if(sum(round(X, 7) == 1) > 1 ){
-        message("dropping noisy genes...")
-        nois_ind <- findNoise(evec = Y, thresh = 100)
-        adjaMat <- adjaMat[-nois_ind, ]
-        adjaMat <- adjaMat[, -nois_ind]
-        D <- D[-nois_ind, ]
-        D <- D[, -nois_ind]
-        ind <- c(ind, nois_ind)
-
-        if(!is.null(geneID)){geneID <- geneID[-nois_ind]
-        temp <- paste0("number of noisy genes are... ", length(nois_ind))
-        message(temp)
-        message("calculation from begining...")}
-
-        # Calculate the diagonal degree matrix
-        D <- diag(rowSums(adjaMat))
-        d <- as.matrix(as.vector(rowSums(adjaMat)))
-
-        # Normalized Laplacian
-        message("calculating normalized Laplacian \n it may take time...")
-        diag(D) <- 1/sqrt(diag(D))
-        L <- D %*% adjaMat %*% D
-
-        # Calculate the eigenvalues and eigenvectors
-        message("calculating eigenvalues/vectors \n it may take time...")
-        egvv <- eigen(L)
-        Y <- egvv$vectors
-        X <- egvv$values }
-
-    #
-    Y <- D %*% Y
-    Y <- sweep(Y, 2, (t(d) %*% Y)/sum(d))
-
-    #
-    D <- diag(rowSums(adjaMat))
-    scalar <- function(x, D){return(x/sqrt(as.vector(t(x) %*% D %*% x)))}
-    Y <- apply(Y, 2, scalar, D)
-
-    constant <- t(Y[,1]) %*% D %*% Y[, 1]
-    if(round(constant, 7) != 1 ){
-        warning("eigenvector 1 condition does not hold! ", call. = FALSE)
-        temp <- paste0("the condition value is ",
-                    as.double(t(Y[,1]) %*% D %*% Y[, 1] != 1))
-        message(temp) }
+    ################### transformation
+    nl <- transformation(adjaMat, geneID, eff.egs)
+    X <-  nl$X
+    Y <- nl$Y
+    ind <- nl$ind
+    geneID <- nl$geneID
 
 
     # Drop first eigenvalue and eigenvectors
@@ -762,91 +803,55 @@ clustering <- function(adjaMat, geneID , annotation_db ,
     # saving original
 
     if(saveOrig == TRUE){
-        if(n_egvec == "all"){
-            n_egvec <- ncol(Y)
-
-        }else if(is.character(n_egvec)){
-            message("n_egvec is not neigher all nor integer")
-            message("setting n_egvect to 110")
-            n_egvec <- 110
-
-        }else if(n_egvec != round(n_egvec)){
-            warning("n_egvec must be an integer", call. = FALSE)
-            message("making n_egvec to 110")
-            n_egvec <- 110
-        }
-
         temp <- paste0("n_egvec is ", n_egvec)
         message(temp)
         Yorig <- Y[, seq_len(min(n_egvec, ncol(Y)))]
         Xorig <- X[seq_len(min(n_egvec, length(X)))]
-        Yorig <- divideNorm(Yorig, rowWise = TRUE)
-
-    }
+        Yorig <- divideNorm(Yorig, rowWise = TRUE) }
 
     plt <- list()
 
     #################################################################################
-
     if(is.null(kopt) && is.null(method) && !is.null(annotation_db)){
-
 
         k <- clusterNumber(egvals = X, maxNum = 102)
         plt <- c(plt, setNames(list(k$plots.relativeGap), "relativeGap"),
-                    setNames(list(k$plots.secondOrderGap), "secondOrderGap" ),
-                    setNames(list(k$plots.additiveGap), "additiveGap") )
+                 setNames(list(k$plots.secondOrderGap), "secondOrderGap" ),
+                 setNames(list(k$plots.additiveGap), "additiveGap") )
 
 
         cvopt <- cvGO(adja = adjaMat, k = k, Y = Y, X = X,
-                    annotation = annotation_db, geneID = geneID,
-                    maxIter = maxIter, numStart = numStart, func = func.GO)
+                      annotation = annotation_db, geneID = geneID,
+                      maxIter = maxIter, numStart = numStart, func = func.GO)
 
-        method <- cvopt$method
-        k <- cvopt$k
-        Y <- cvopt$Y
-        X <- cvopt$X
-        clus <- cvopt$clus
-        clusterLabels <- cvopt$clusterLabels
-        conduct <- cvopt$conductance
-        df <- cvopt$df
-        cv <- "cvGO"
 
-        temp <- paste0("\n method ", method, " is selected using GO validation and k is ", k)
+        temp <- paste0("\n method ", method, " is selected using GO validation and k is ", cvopt$k)
         message(temp)
 
-        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                        "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                        "clusterLabels" = as.character(clusterLabels),
-                        "conductance" = conduct, "cvGOdf" = df, "cv" = cv,
+        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = cvopt$method,
+                        "k" = cvopt$k, "Y" = cvopt$Y, "X" = cvopt$X, "cluster" = cvopt$clus,
+                        "clusterLabels" = as.character(cvopt$clusterLabels),
+                        "conductance" = cvopt$conductance, "cvGOdf" = cvopt$df, "cv" = "cvGO",
                         "clusterNumberPlot" = plt)
 
     } else if(is.null(kopt) && is.null(method) && is.null(annotation_db)){
 
         k <- clusterNumber(egvals = X, maxNum = 102)
         plt <- c(plt, setNames(list(k$plots.relativeGap), "reltiveGap"),
-                    setNames(list(k$plots.secondOrderGap), "secondOrderGap" ),
-                    setNames(list(k$plots.additiveGap), "additiveGap") )
+                 setNames(list(k$plots.secondOrderGap), "secondOrderGap" ),
+                 setNames(list(k$plots.additiveGap), "additiveGap") )
 
         cvopt <- cvConductance(adja = adjaMat, k = k, Y = Y, X = X,
-                            func = func.conduct,
-                            maxIter = maxIter, numStart = numStart)
+                               func = func.conduct,
+                               maxIter = maxIter, numStart = numStart)
 
-        method <- cvopt$method
-        k <- cvopt$k
-        Y <- cvopt$Y
-        X <- cvopt$X
-        clus <- cvopt$clus
-        clusterLabels <- cvopt$clusterLabels
-        conduct <- cvopt$conductance
-        cv <- "cvConductance"
-
-        temp <- paste0("\n method ", method, " is selected using conductance index validation and k is ", k)
+        temp <- paste0("\n method ", method, " is selected using conductance index validation and k is ", cvopt$k)
         message(temp)
 
-        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                        "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                        "clusterLabels" = as.character(clusterLabels),
-                        "conductance" = conduct, "cv" = cv,
+        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = cvopt$method,
+                        "k" = cvopt$k, "Y" = cvopt$Y, "X" = cvopt$X, "cluster" = cvopt$clus,
+                        "clusterLabels" = as.character(cvopt$clusterLabels),
+                        "conductance" = cvopt$conductance, "cv" = "cvConductance",
                         "clusterNumberPlot" = plt)
 
     }else if(is.null(kopt) && !is.null(method)){
@@ -863,22 +868,14 @@ clustering <- function(adjaMat, geneID , annotation_db ,
             clusf <- kmeans(Yf, krelativeGap, iter.max = maxIter, nstart = numStart)
             conf <- conductance(adja = adjaMat, clusLab = clusf$cluster)
 
-            method <- "relativeGap"
-            k <- krelativeGap
-            Y <- Yf
-            X <- Xf
-            clus <- clusf
-            clusterLabels <- clus$cluster
-            conduct <- conf
-            cv <- "userMethod"
 
-            temp <- paste0("\n method ", method, " is selected using user and k is ", k)
+            temp <- paste0("\n method ", method, " is selected using user and k is ", k$relativeGap)
             message(temp)
 
-            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                            "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                            "clusterLabels" = as.character(clusterLabels),
-                            "conductance" = conduct, "cv" = cv)
+            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = "relativeGap",
+                            "k" = k$relativeGap, "Y" = Yf, "X" = Xf, "cluster" = clusf,
+                            "clusterLabels" = as.character(clusf$cluster),
+                            "conductance" = conf, "cv" = "userMethod")
 
         } else if(method == "secondOrderGap"){
 
@@ -891,22 +888,13 @@ clustering <- function(adjaMat, geneID , annotation_db ,
             cluss <- kmeans(Ys, ksecondOrderGap, iter.max = maxIter, nstart = numStart)
             cons <- conductance(adja = adjaMat, clusLab = cluss$cluster)
 
-            method <- "secondOrderGap"
-            k <- ksecondOrderGap
-            Y <- Ys
-            X <- Xs
-            clus <- cluss
-            clusterLabels <- clus$cluster
-            conduct <- cons
-            cv <- "userMethod"
-
-            temp <- paste0("\n method ", method, " is selected using user and k is ", k)
+            temp <- paste0("\n method ", method, " is selected using user and k is ", k$secondOrderGap)
             message(temp)
 
-            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                            "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                            "clusterLabels" = as.character(clusterLabels),
-                            "conductance" = conduct, "cv" = cv)
+            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = "secondOrderGap",
+                            "k" = k$secondOrderGap, "Y" = Ys, "X" = Xs, "cluster" = cluss,
+                            "clusterLabels" = as.character(cluss$cluster),
+                            "conductance" = cons, "cv" = "userMethod")
 
         } else if(method == "additiveGap"){
 
@@ -919,22 +907,13 @@ clustering <- function(adjaMat, geneID , annotation_db ,
             clusg <- kmeans(Yg, kadditiveGap, iter.max = maxIter, nstart = numStart)
             cong <- conductance(adja = adjaMat, clusLab = clusg$cluster)
 
-            method <- "additiveGap"
-            k <- "additiveGap"
-            Y <- Yg
-            X <- Xg
-            clus <- clusg
-            clusterLabels <- clus$cluster
-            conduct <- cong
-            cv <- "userMethod"
-
-            temp <- paste0("\n method ", method, " is selected using user and k is ", k)
+            temp <- paste0("\n method ", method, " is selected using user and k is ", k$additiveGap)
             message(temp)
 
-            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                            "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                            "clusterLabels" = as.character(clusterLabels),
-                            "conductance" = conduct, "cv" = cv)
+            newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = "additiveGap",
+                            "k" = k$additiveGap, "Y" = Yg, "X" = Xg, "cluster" = clusg,
+                            "clusterLabels" = as.character(clusg$cluster),
+                            "conductance" = cong, "cv" = "userMethod")
 
         } else  {
             stop(" method for number of clusters can be either relativeGap,
@@ -950,22 +929,13 @@ clustering <- function(adjaMat, geneID , annotation_db ,
         clusopt <- kmeans(Yopt, kopt, iter.max = maxIter, nstart = numStart)
         conopt <- conductance(adja = adjaMat, clusLab = clusopt$cluster)
 
-        method <- "userkopt"
-        k <- kopt
-        Y <- Yopt
-        X <- Xopt
-        clus <- clusopt
-        clusterLabels <- clus$cluster
-        conduct <- conopt
-        cv <- "userkopt"
-
-        temp <- paste0("\n selected k is ", k, " by user")
+        temp <- paste0("\n selected k is ", kopt, " by user")
         message(temp)
 
-        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = method,
-                        "k" = k, "Y" = Y, "X" = X, "cluster" = clus,
-                        "clusterLabels" = as.character(clusterLabels),
-                        "conductance" = conduct, "cv" = cv)
+        newList <- list("dropped.indices" = ind, "geneID" = geneID, "method" = "userkopt",
+                        "k" = kopt, "Y" = Yopt, "X" = Xopt, "cluster" = clusopt,
+                        "clusterLabels" = as.character(clusopt$cluster),
+                        "conductance" = conopt, "cv" = "userkopt")
     }
 
 
@@ -975,7 +945,7 @@ clustering <- function(adjaMat, geneID , annotation_db ,
 
         message("calculating the Silhouette index \n it may take time...")
 
-        sil <- silhouette(dis.y = dist(Y), clus.labels = clusterLabels)
+        sil <- silhouette(dis.y = dist(Y), clus.labels = newList$clusterLabels)
         sil <- sil %>%  arrange(clusterLabel ,-silIndex)
         sil$clusterLabel <- as.factor(sil$clusterLabel)
         genes <- data.frame(geneID = geneID, geneIndices = seq(1, length(geneID)))
