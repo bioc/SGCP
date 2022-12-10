@@ -22,11 +22,15 @@ checkSym <- function(mat, stp){
     # checks if mat is symmetric
     # checks if values in mat are between (0, 1)
 
-    caption_sym <- paste0(" output of ", stp, " , is not symmetric")
+    sym_sym <- paste0(" output of ", stp)
+    caption_sym <- paste0(sym_sym, " is not symmetric")
+    
     if(!isSymmetric(mat))
         stop(caption)
-
-    caption_01 <- paste0(" output of ", stp, "are not in (0,1)")
+    
+    c01 <-  paste0(" output of ", stp)
+    caption_01 <- paste0(c01, " are not in (0,1)")
+    
     if(length(table(between(mat, 0, 1)["FALSE"])) != 0)
         stop(caption_01)
 
@@ -39,7 +43,6 @@ checkSym <- function(mat, stp){
 checkNumeric <- function(x, stp){
     # checks if all the values in x are numeric
 
-    #res <- which(vapply(x, class, numeric(1)) != "numeric")
     caption <- paste0(" at least one non-numeric value at ", stp)
     if(!is.numeric(x))
         stop(caption)
